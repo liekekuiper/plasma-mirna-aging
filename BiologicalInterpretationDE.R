@@ -7,6 +7,8 @@ library("DESeq2")
 library("VennDiagram")
 library("enrichplot")
 library("ggpubr")
+library(clusterProfiler)
+library(org.Hs.eg.db)
 
 # List all CSV files in the directory
 csv_files <- list.files(pattern = "*.csv")
@@ -71,102 +73,8 @@ colnames(mort_subset) <- c("miRNA2", "log2FoldChange_mort", "padj_mort")
 merged_data <- Reduce(function(x, y) merge(x, y, by = "miRNA2", all = TRUE), 
                       list(age_subset, PA_subset, FI_subset, mort_subset))
 
-# View the resulting dataframe
+# View the merged_data
 head(merged_data)
-
-##Elastic net
-enpredage = read_excel("../../Results_miRNA_29Nov2024_EN.xlsx", sheet = "age") %>% mutate(.,Weight = as.numeric(Weight)) %>% subset(., Weight != 0) %>% left_join(., rnacounts12[,c("miRNA", "miRNA2")])
-enpredPA = read_excel("../../Results_miRNA_29Nov2024_EN.xlsx", sheet = "PhenoAge") %>% mutate(.,Weight = as.numeric(Weight)) %>% subset(., Weight != 0) %>% left_join(., rnacounts12[,c("miRNA", "miRNA2")])
-enpredFI = read_excel("../../Results_miRNA_29Nov2024_EN.xlsx", sheet = "FI") %>% mutate(.,Weight = as.numeric(Weight)) %>% subset(., Weight != 0) %>% left_join(., rnacounts12[,c("miRNA", "miRNA2")])
-enpredmort = read_excel("../../Results_miRNA_29Nov2024_EN.xlsx", sheet = "mortality") %>% mutate(.,Weight = as.numeric(Weight)) %>% subset(., Weight != 0) %>% left_join(., rnacounts12[,c("miRNA", "miRNA2")])
-
-addfile11 <- read_excel("../../Results_miRNA_29Nov2024_EN.xlsx", sheet = "All") %>%
-  mutate(across(-miRNA, as.numeric)) %>%
-  left_join(rnacounts12[, c("miRNA", "miRNA2")], by = "miRNA") %>%
-  mutate(miRNA2 = case_when(is.na(miRNA2) ~ "Intercept", TRUE ~ miRNA2)) %>%
-  select(miRNA2, age, PhenoAge, FI, mortality) %>%
-  rename("miRNA2" = "miRNA", 
-         "age" = "mirAge", 
-         "PhenoAge" = "mirPA", 
-         "FI" = "mirFI",
-         "mortality" = "mirMort")
-openxlsx::write.xlsx(addfile11, "../../AdditionalFile11.xlsx")
-
-#Check number of overlap and create Venn:
-agevenn <- enpredage %>% filter(miRNA!="(Intercept)") %>% dplyr::select(miRNA2) %>% pull()
-pavenn  <- enpredPA  %>% filter(miRNA!="(Intercept)") %>% dplyr::select(miRNA2) %>% pull()
-fivenn  <- enpredFI  %>% filter(miRNA!="(Intercept)") %>% dplyr::select(miRNA2) %>% pull()
-mortvenn<- enpredmort%>% filter(miRNA!="(Intercept)") %>% dplyr::select(miRNA2) %>% pull()
-
-library(dplyr)
-library(tidyr)
-
-# Combine all data into one long table with direction labels based on Weight
-combined_data <- bind_rows(
-  enpredage %>% mutate(Source = "mirAge"),
-  enpredPA %>% mutate(Source = "mirPA"),
-  enpredFI %>% mutate(Source = "mirFI"),
-  enpredmort %>% mutate(Source = "mirMort")
-) %>%
-  mutate(Direction = ifelse(Weight > 0, "+", ifelse(Weight < 0, "-", NA)))
-
-# Create a contingency table with miRNAs as rows and biomarkers as columns
-contingency_table <- combined_data %>%
-  dplyr::select(miRNA2, Source, Weight) %>%
-  pivot_wider(
-    names_from = Source,
-    values_from = Weight,
-    values_fill = NA
-  ) %>%
-  subset(!is.na(miRNA2)) %>%
-  mutate(., included_in = rowSums(!is.na(across(where(is.numeric)))))
-
-morethanone <- contingency_table %>%
-  filter(rowSums(!is.na(across(where(is.numeric)))) > 1)
-not_consistent = contingency_table%>%
-  rowwise %>%
-  filter(all(c(-1, 1)  %in% sign(across(where(is.numeric))) )) %>%
-  ungroup
-
-# Define colors
-colorblind <- c(
-  "#361ae5",  # Color for mirAge
-  "#dc267f",  # Color for mirPA
-  "#fe6100",  # Color for mirFI
-  "#ffb000"   # Color for mirMort
-)
-
-# Define the data
-venn_data <- list(
-  "MiRNA in mirAge" = agevenn,
-  "MiRNA in mirPA" = pavenn,
-  "MiRNA in mirFI" = fivenn,
-  "MiRNA in mirMort" = mortvenn
-)
-
-
-# Create the Venn diagram
-venn.plot <- venn.diagram(
-  x = venn_data,
-  imagetype = 'png',
-  height = 5, 
-  width = 8,
-  units = "in",
-  category.names = names(venn_data),
-  col = colorblind,
-  fill = colorblind,
-  alpha = 0.4,              # Transparency of fills
-  cat.cex = 1,            # Category label size
-  cat.fontfamily = "sans",
-  main.fontfamily = "sans",
-  fontfamily = "sans",
-  main = "Venn Diagram of MiRNAs selected in aging biomarkers",
-  main.cex = 1.5,
-  filename = "../Venn_aging_biomarkers.png",
-  resolution = 1200,
-  
-)
-
 
 
 miRNAs = unique(c(paste0("hsa-",significant_testage_miRNAs$miRNA2),
@@ -175,11 +83,10 @@ miRNAs = unique(c(paste0("hsa-",significant_testage_miRNAs$miRNA2),
            paste0("hsa-",significant_testmort_miRNAs$miRNA2)))
 
 #Genes
-#TarBase = data.table::fread("../../../Data/BiologicalInterpretation/Homo_sapiens_TarBase-v9.tsv", sep = '\t', data.table=F)
-#mirTarBase = read_excel("../../../Data/BiologicalInterpretation/hsa_MTI.xlsx") #mirTarBase
 predicted = data.table::fread("../../../Data/BiologicalInterpretation/miRDB_v6.0_prediction_result.txt") #mirDB
 predictedkeep = subset(predicted, V3 > 80 & V1 %in% paste0("hsa-", all591mirnas$miRNA))
 names(predictedkeep) = c("miRNA", "Gene", "certainty")
+#When naming is outdated: update
 predictedkeep = predictedkeep %>%
   mutate(Gene = case_when(Gene == "NM_001017973" ~ "NM_001365679",
                           Gene == "NM_001286549" ~ "NR_149155",
@@ -238,29 +145,23 @@ predictedkeep = predictedkeep %>%
                           Gene == "NM_001281729" ~ "NR_168134",
                           TRUE ~ Gene)) %>% subset(., !is.na(Gene))
 
+#How many have been matched
 length(unique(predictedkeep$miRNA)) #571
 
+#Only keep ones that have been identified
 predicted_age_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",significant_testage_miRNAs$miRNA2))
 predicted_PA_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",significant_testPA_miRNAs$miRNA2))
 predicted_FI_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",significant_testFI_miRNAs$miRNA2))
 predicted_mort_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",significant_testmort_miRNAs$miRNA2))
 
-en_age_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",enpredage$miRNA2))
-en_PA_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",enpredPA$miRNA2))
-en_FI_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",enpredFI$miRNA2))
-en_mort_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",enpredmort$miRNA2))
-
+#Number of miRNAs that have predicted gene per outcome
 length(unique(predicted_age_genes$miRNA)) #176
 length(unique(predicted_PA_genes$miRNA))  #216
 length(unique(predicted_FI_genes$miRNA))  #59
 length(unique(predicted_mort_genes$miRNA))#15
 
-# Load necessary libraries
-library(clusterProfiler)
-library(org.Hs.eg.db)  # for human; adjust for other organisms if needed
-library(dplyr)
 
-# Function for OR with ID conversion from RefSeq to Entrez
+# Function for overrepresentation with ID conversion from RefSeq to Entrez
 perform_OR_with_conversion <- function(significant_mirna_lists, all_mirna_targets, organism = "hsa") {
   # significant_mirna_lists: Named list of data frames with columns "miRNA" and "Gene" (RefSeq IDs)
   # all_mirna_targets: Data frame with "miRNA" and "Gene" (RefSeq IDs) for all miRNA-gene mappings
@@ -542,42 +443,16 @@ perform_fisher_tests <- function(tsi, significant_miRNAs, dataset_name1, dataset
        sig_expected = sig_expected_results)
 }
 
-# Example usage for different miRNA datasets
-en_age <- perform_fisher_tests(tsi, enpredage, "en_age", "tsi")
-en_PA <- perform_fisher_tests(tsi, enpredPA, "en_PA", "tsi")
-en_FI <- perform_fisher_tests(tsi, enpredFI, "en_FI", "tsi")
-en_mort <- perform_fisher_tests(tsi, enpredmort, "en_mort", "tsi")
-
+# Use for different miRNA datasets
 results_testage <- perform_fisher_tests(tsi, significant_testage_miRNAs, "tsi_specific_age", "tsi")
 results_testPA <- perform_fisher_tests(tsi, significant_testPA_miRNAs, "tsi_specific_PA", "tsi")
 results_testFI <- perform_fisher_tests(tsi, significant_testFI_miRNAs, "tsi_specific_FI", "tsi")
 results_testmort <- perform_fisher_tests(tsi, significant_testmort_miRNAs, "tsi_specific_mort", "tsi")
 
-
-
-# Display the results
-#results_testage$all_results
-#results_testage$significant_results
-results_testage$sig_expected
-
-#results_testPA$all_results
-#results_testPA$significant_results
-#results_testPA$expected_counts
-results_testPA$sig_expected
-
-#results_testFI$all_results
-#results_testFI$significant_results
-#results_testFI$expected_counts
-results_testFI$sig_expected
-
-#results_testmort$all_results
-#results_testmort$significant_results
-#results_testmort$expected_counts
-results_testmort$sig_expected
-
-
+#Combine results
 tissue_allpheno = rbind(results_testage$expected_counts, results_testPA$expected_counts, results_testFI$expected_counts, results_testmort$expected_counts)
 tissue_allpheno$pFDR = p.adjust(tissue_allpheno$p_value, method = "fdr")
+
 # Convert the relevant columns to numeric
 tissue_allpheno$count_set1 <- as.numeric(tissue_allpheno$count_set1)
 tissue_allpheno$expected_count1 <- as.numeric(tissue_allpheno$expected_count1)
@@ -610,17 +485,6 @@ openxlsx::write.xlsx(additionalfile7, "../../AdditionalFile7.xlsx")
 sig_tissue_allpheno = subset(tissue_allpheno, pFDR < 0.05)
 overrep = subset(sig_tissue_allpheno, count_set1 > expected_count1)
 underrep = subset(sig_tissue_allpheno, count_set1 < expected_count1)
-
-
-en_allpheno = rbind(en_age$expected_counts, en_PA$expected_counts, en_FI$expected_counts, en_mort$expected_counts)
-en_allpheno$pFDR = p.adjust(en_allpheno$p_value, method = "fdr")
-# Convert the relevant columns to numeric
-en_allpheno$count_set1 <- as.numeric(tissue_allpheno$count_set1)
-en_allpheno$expected_count1 <- as.numeric(tissue_allpheno$expected_count1)
-
-sig_en_allpheno = subset(en_allpheno, pFDR < 0.05)
-overrep_en = subset(sig_en_allpheno, count_set1 > expected_count1)
-underrep_en= subset(sig_en_allpheno, count_set1 < expected_count1)
 
 ### Comparison to other datasets:
 #Chronological age
@@ -781,34 +645,4 @@ tables5 <- dplyr::select(tables5, -starts_with("padj"))
 
 # Save the table to an Excel file
 openxlsx::write.xlsx(tables5, "../../TableS5.xlsx")
-
-#Answer question Reviewer 3
-old_associated = read_excel("../Old Results For Reviewer 3/Additional_File4_Table_S4.xlsx")
-old_associated2 = read_excel("../Old Results For Reviewer 3/Additional_File6_Table_S5.xlsx")
-old_associated2[, -1] <- lapply(old_associated2[, -1], as.numeric)
-
-old_associated2 = subset(old_associated2, `pFDR Age in train set with LLOQ 50%` < 0.05)
-old_associated[, -1] <- lapply(old_associated[, -1], as.numeric)
-old_age = subset(old_associated, `pFDR Age in test set` < 0.05)
-
-sum(old_age$miRNA %in% significant_testage_miRNAs$miRNA2) / nrow(old_age)
-sum(significant_testage_miRNAs$miRNA2 %in% old_age$miRNA) / nrow(significant_testage_miRNAs)
-
-sig_val_age = subset(DE_AGE_Standard50_Validation, padj < 0.05)
-old_age_val = subset(old_associated, `pFDR Age in validation set` < 0.05)
-sum(old_age_val$miRNA %in% rownames(sig_val_age)) / nrow(old_age_val)
-sum(rownames(sig_val_age) %in% old_age_val$miRNA) / nrow(sig_val_age)
-
-old_PA = subset(old_associated, `pFDR PhenoAge in test set` < 0.05)
-sum(old_PA$miRNA %in% significant_testPA_miRNAs$miRNA2) / nrow(old_PA)
-sum(significant_testPA_miRNAs$miRNA2 %in% old_PA$miRNA) / nrow(significant_testPA_miRNAs)
-
-old_FI = subset(old_associated, `pFDR Frailty Index in test set` < 0.05)
-sum(old_FI$miRNA %in% significant_testFI_miRNAs$miRNA2) / nrow(old_FI)
-sum(significant_testFI_miRNAs$miRNA2 %in% old_FI$miRNA) / nrow(significant_testFI_miRNAs)
-
-old_mort = subset(old_associated, `pFDR 10-years-mortality in test set` < 0.05)
-sum(old_mort$miRNA %in% significant_testmort_miRNAs$miRNA2) / nrow(old_mort)
-sum(significant_testmort_miRNAs$miRNA2 %in% old_mort$miRNA) / nrow(significant_testmort_miRNAs)
-
 
