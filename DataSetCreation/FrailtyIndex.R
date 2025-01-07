@@ -1,12 +1,15 @@
 ############ Creating FI in ERGO-4 and ERGO-5 with same variables
 rm(list=ls())
-
+#load libraries
 library("haven")
 library("dplyr")
+
+#set working directory
 setwd("/Volumes/Biological_Age/miRNA/")
+
 ##Frailty index ERGO-5
 FIE5        <- read_sav("/Volumes/Biological_Age/DATA_RAW/FrailtyIndex_ERGO5(eline).sav")
-#Mobility is missing but available in the data
+#Mobility was missing at time of creation of frailty index in E5, but is available now
 mobilityE5 <- read_sav("/Volumes/Nutrition_Lifestyle_Frailty/Raw_data_FI/ERGO-5/e5_intvw_JOINT_(29-apr-2016).sav")
 mobilityE5 = mobilityE5 %>%
   mutate(FI_Mobility = case_when(e5_EI3_50 == 1 ~ 0,
@@ -43,6 +46,7 @@ set.seed(123)
 
 md.pattern(head(FIE4))
 FIE4[, !names(FIE4) %in% c("ergoid", "age")] = lapply(FIE4[,!names(FIE4) %in% c("ergoid", "age")],  as.factor);
+
 ##### Imputation ####
 init = mice(FIE4, maxit=0) #halt imputation
 meth = init$method
@@ -58,8 +62,6 @@ sapply(FI_imputed, function(x) sum(is.na(x))) #Looking at missing values
 
 ncolFI= length(grep(x = colnames(FI_imputed), pattern = "^Def_"))
 
-library(dplyr)
-
 FI_imputed2 <- FI_imputed %>%
   mutate(across(starts_with("Def_"), ~as.numeric(as.character(.)), .names = "{col}_num")) %>%
   mutate(
@@ -71,10 +73,12 @@ FI_imputed2 = select(FI_imputed2, -ends_with("_num"))
 
 write.csv(FI_imputed2, file="./Data/FIE4_imputed.csv")
 
+#Only select id and sum scores
 selectscoreFIE5 = select(FIE5_2, c(ergoid, FI))
 names(selectscoreFIE5) = c("ergoid", "FI_E5")
 selectscoreFIE4 = select(FI_imputed2, c(ergoid, FI))
 names(selectscoreFIE4) = c("ergoid", "FI_E4")
+
 # Inner join the two data frames on 'ergoid'
 delta_data = inner_join(selectscoreFIE5, selectscoreFIE4)
 
