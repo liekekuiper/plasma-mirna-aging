@@ -17,7 +17,6 @@ rnacounts04 = read_excel("Data/BeforeCPM/JPC-17-046_miRNA_RawCounts_Donor.xlsx")
 
 # Covariates and outcomes
 trainadj= data.table::fread("Data/train_standardadjustments.csv", data.table = F)
-trainadj = subset(trainadj, ergoid != 5398002) # No miRNAs
 testadj = data.table::fread("Data/test_standardadjustments.csv", data.table = F)
 extraadj= data.table::fread("Data/ex_standardadjustments.csv", data.table=F)
 trainadj = left_join(trainadj, rnatr[,c("ergoid", "PhenoAge")])
