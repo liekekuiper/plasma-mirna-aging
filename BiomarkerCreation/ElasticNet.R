@@ -18,6 +18,7 @@ demo12=inner_join(demo12, bld12)
 demo12$age= as.numeric(demo12$e4_2686 - demo12$date_of_birth)/365.25
 demo12=select(demo12, c(ergoid, rs_cohort, sex, age))
 
+#miRNAs RI-IV
 rna4 = read.csv("Data/cpm_rs4.csv", row.names = 1)
 #Demographics
 demo4=read.xlsx("Data/miRNA_755Participants_RS4.xlsx", sheet = "Demographic info 755 poeple")
@@ -37,6 +38,7 @@ names(plate12)=c("ergoid", "PlateNR", "Well")
 plate4=read.xlsx("Data/PlateNumber_754SamplesERGOX_miRNAs.xlsx", sheet = 1)
 names(plate4)=c("ergoid", "PlateNR", "Well")
 
+#Create inner/outer-well
 plate12 = plate12 %>% mutate(
   border = case_when(grepl("A|G|H", Well) | grepl("1$|11$|12$", Well)~ "Yes",
                      TRUE ~ "No")
@@ -54,6 +56,7 @@ exrna=Reduce(function(x,y) inner_join(x,y), ex, accumulate = F)
 exrna$rs_cohort = 4
 exrna$ergoid <- as.character(exrna$ergoid)
 
+#Read in end-points
 FI=data.frame(read.csv("Data/FIE4_imputed.csv"), row.names =1) #Frailty index in ERGO-4
 FI <- FI %>%
   #mutate(across(starts_with("FI"), ~ . * 100)) %>%
@@ -313,7 +316,6 @@ sum(coefs$mortality != 0, na.rm=T)
 write.csv(test_data, "./Data/e4_mirna_test.csv")
 write.csv(exrna, "./Data/ex_mirna_vali.csv")
 
-######################### Create FHS in RS
 
 #### Correlation ####
 correlatie=select(test_data, c(age, starts_with("miRNA_")))
@@ -422,4 +424,3 @@ pairs(notaa_correlatiex,
       oma=c(0.7,0.7,0.7,0.7),
       xaxt="n", yaxt="n")   
 dev.off()
-
