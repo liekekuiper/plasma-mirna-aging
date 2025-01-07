@@ -6,6 +6,8 @@ library("dplyr")
 library("glmnet")
 library("survival")
 library("openxlsx")
+library("ggfortify") 
+library("paletteer")
 
 #miRNAs RS-I and RS-II
 rnatr=data.frame(read.csv("Data/rnaallageJulia.csv")) #Getting data split and PhenoAge
@@ -125,7 +127,7 @@ data_elastic = function(trainortest, outcome){
   return(residuals_df)
 }
 
-### PCA for reviewer ####
+### PCA plots to check removal of technical variation ####
 pca_check = data_elastic("all", "age")
 pca_check$ergoid = rownames(pca_check)
 pcaplate = plate12
@@ -137,9 +139,6 @@ pca_check = left_join(pca_check, pcaplate)
 check.pca <- prcomp(pca_check[,c(2:592)], 
                    center = TRUE, 
                    scale. = TRUE) 
-# loading library 
-library(ggfortify) 
-library(paletteer)
 
 # Generate a colorblind-friendly palette with 26 colors
 colorblind_palette <- c(
@@ -171,7 +170,7 @@ check.pca.plot2 <- autoplot(check.pca,
 library("ggpubr")
 save_pca_plots = ggarrange(check.pca.plot, check.pca.plot2, labels = c("a", "b"))
 
-ggsave(plot = save_pca_plots, filename = "Results/Rebuttal/PCA_plot_for_reviewer.png", width = 12, height = 5)
+ggsave(plot = save_pca_plots, filename = "Results/Rebuttal/PCA_plot_technical.png", width = 12, height = 5)
 
 
 wb <- createWorkbook() #create workbook to save Excel and avoid xlsx package
