@@ -4,6 +4,12 @@ library("haven")
 library("dplyr")
 library("ggplot2")
 library("survival")
+library("nnet")
+library("tidyr")
+library("ggh4x")
+library("ggpubr")
+
+source("AssociationOutcomeFunctions.R")
 
 setwd("/Volumes/Biological_Age/miRNA")
 
@@ -31,7 +37,7 @@ mort4=mort4%>%mutate(
   blooddate=e4_2686,
   enddate_mortality=fp_censordate,
   inc_mortality=case_when(!is.na(enddate_mortality) ~ fp_vitalstatus,
-                  TRUE ~ NA_real_)) %>%
+                          TRUE ~ NA_real_)) %>%
   select(., ergoid, enddate_mortality, inc_mortality)
 
 mortx=mortx%>%mutate(
@@ -39,7 +45,7 @@ mortx=mortx%>%mutate(
   enddate_mortality=fp_censordate,
   blooddate=fp_startdate, #blooddate not available
   inc_mortality=case_when(!is.na(enddate_mortality) ~ fp_vitalstatus,
-                  TRUE ~ NA_real_))%>%
+                          TRUE ~ NA_real_))%>%
   select(., ergoid, blooddate, enddate_mortality, inc_mortality)
 
 #ERGO-EXTRA Questions
@@ -53,8 +59,8 @@ ergox = ergox %>% dplyr::mutate(
   hospital = case_when(ex_EXTI_04_HOSP == 0 ~ 0,
                        ex_EXTI_04_HOSP == 1 ~ 1),
   IADL_Telephone = case_when(ex_EXTI_02_28 == 7 ~ 3, #different annotation, do it before changing the rest
-                        ex_EXTI_02_28 > 3 & ex_EXTI_02_28 < 7 ~ 2,
-                        ex_EXTI_02_28 <= 3 ~ ex_EXTI_02_28 -1),
+                             ex_EXTI_02_28 > 3 & ex_EXTI_02_28 < 7 ~ 2,
+                             ex_EXTI_02_28 <= 3 ~ ex_EXTI_02_28 -1),
   across(starts_with("ex_EXTI_02_"), ~ ifelse(. > 4, NA, . - 1)),
   ADL_Dressing = pmax(ex_EXTI_02_03, ex_EXTI_02_04, ex_EXTI_02_05, na.rm = TRUE),
   ADL_Rising = pmax(ex_EXTI_02_06, ex_EXTI_02_07, na.rm = TRUE),
@@ -73,13 +79,14 @@ ergox = ergox %>% dplyr::mutate(
   IADL_Housekeeping = ex_EXTI_02_26) %>%
   rowwise() %>% 
   dplyr::mutate(BADL =  sum(c_across(starts_with("ADL_")), na.rm = F), #HAQ ADL Score
-         IADL = sum(c_across(starts_with("IADL_")), na.rm = F) ) %>% #IADL score
+                IADL = sum(c_across(starts_with("IADL_")), na.rm = F) ) %>% #IADL score
   ungroup() %>% 
   select(., ergoid, selfhealth, hospital, BADL, IADL)
 
-#ergox$pain <- relevel(ergox$pain, ref = "no_pain")
+#Make feeling as healthy as peers reference
 ergox$selfhealth <- relevel(ergox$selfhealth, ref = "same")
 
+#Make one big dataframe
 pheno4 = list(test4, mort4, multim4)
 phenox = list(young, mortx, ergox)
 
@@ -88,9 +95,7 @@ valiset = Reduce(function(x,y)left_join(x,y), phenox, accumulate =F)
 
 biomarkers <- c("miRNA_age", "miRNA_PhenoAge", "miRNA_FI", "miRNA_mortality")
 linear_outcomes <- c("FI_delta", "FI_E4", "BADL", "IADL", "PhenoAge")
-binary_outcomes <- c("hospital")
 multi_outcomes <- c("selfhealth")
-#cox_outcomes <- c("inc_mortality", "inc_multimorbid", "inc_morbidity", "inc_CHD","inc_COPD", "inc_dementia","inc_DM", "inc_stroke", "inc_cancer")
 cox_outcomes <- c("inc_mortality", "inc_multimorbid", "inc_morbidity")
 
 models <- c("age + sex + lympho + mono + RBC + border + PlateNR", 
@@ -114,47 +119,6 @@ data = function(input){
   }
   return(df)
 }
-# Define helper functions
-preprocess_data <- function(data, clock_var, covariates, coxyn, outcome) {
- 
-  if(coxyn == TRUE){
-  endvar = gsub("inc_", "enddate_", outcome)  
-  data$followup = as.numeric(as.Date(data[,endvar]) - as.Date(data$blooddate))/365.25
-    # Subset data
-    sub_data <- subset(data, followup > 0 )
-    # Add study time variable
-    sub_data$Studytime <- sub_data$age + sub_data$followup
-  }else if(coxyn == FALSE){
-    sub_data = subset(data, !is.na(data[,outcome]))
-  }
-
-  var_names <- strsplit(covariates, "\\+")[[1]]  # split by + sign
-  var_names <- trimws(var_names)  # remove leading/trailing white space
-  
-  sub_data <- sub_data[complete.cases(sub_data[, var_names]), ] #we want participants to have information on all variables of interest
-  
-  # Compute residuals for outcome variable
-  fit_age <- lm(paste0(clock_var, " ~ age"), data = sub_data)
-  residuals <- scale(residuals(fit_age), center = TRUE, scale = TRUE)#Z-scoring
-  # Add residuals to data
-  sub_data$biological_age <- residuals
-  
-  # Convert Visit variable to factor
-  sub_data$rs_cohort <- as.factor(sub_data$rs_cohort)
-  return(sub_data)
-}
-
-fit_cox_model <- function(datafile, clock_var, outcome_var, covariates) {
-  if(length(levels(datafile$rs_cohort)) >1 ){
-      covariates2 = paste(covariates, "+ rs_cohort")
-    }
-  else{
-    covariates2 = covariates
-  }
-  
-  formula <- as.formula(paste("Surv(Studytime,", outcome_var,") ~ ", clock_var, "+",paste(covariates2, collapse = " + ")))
-  fit <- coxph(formula, data = datafile)
-  return(fit)}
 
 pb <- txtProgressBar(min = 0, max = nrow(params), style = 3)
 
@@ -185,13 +149,13 @@ for (j in 1:nrow(params)){
 
 mort <- mort_keep   <- dplyr::select(params  , -Z)
 mort <- mort_keep <- mort %>% mutate(P_handig = case_when(P < 0.01 ~ sub("e","x10^",sprintf(P, fmt="%.2e")),
-                                             P>= 0.01 ~ sprintf(P, fmt = "%.2f")),
-                        #pFDR = p.adjust(P, method = "fdr"),
-                        HR_CI = paste0(sprintf(HR, fmt = "%.2f"), " (", sprintf(LL, fmt = "%.2f"), ";", sprintf(UL, fmt = "%.2f"), ")"),
-                        
-                        C = case_when(Concordance < 0.01 ~ sub("e","x10^",sprintf(Concordance, fmt="%.2e")),
-                                      Concordance>= 0.01 ~ sprintf(Concordance, fmt = "%.2f")),
-                        #interactionFDR = p.adjust(interaction, method = "fdr")
+                                                          P>= 0.01 ~ sprintf(P, fmt = "%.2f")),
+                                     #pFDR = p.adjust(P, method = "fdr"),
+                                     HR_CI = paste0(sprintf(HR, fmt = "%.2f"), " (", sprintf(LL, fmt = "%.2f"), ";", sprintf(UL, fmt = "%.2f"), ")"),
+                                     
+                                     C = case_when(Concordance < 0.01 ~ sub("e","x10^",sprintf(Concordance, fmt="%.2e")),
+                                                   Concordance>= 0.01 ~ sprintf(Concordance, fmt = "%.2f")),
+                                     #interactionFDR = p.adjust(interaction, method = "fdr")
 )
 mort <- subset(mort, outcomes %in% c("inc_mortality", "inc_multimorbid", "inc_morbidity") & !grepl("PhenoAge|FI", modeluse))
 
@@ -204,21 +168,9 @@ lmparams <- expand.grid(
 
 lmparams = subset(lmparams, 
                   (dataset == "test" & outcomes %in% c("FI_delta", "FI_E5") & modeluse == models[3]) | 
-                  (dataset == "test" & outcomes%in% c("FI_E4", "PhenoAge") & modeluse == models[1]) |
-                  (modeluse == models[1] & !grepl("FI|PhenoAge", outcomes)))
+                    (dataset == "test" & outcomes%in% c("FI_E4", "PhenoAge") & modeluse == models[1]) |
+                    (modeluse == models[1] & !grepl("FI|PhenoAge", outcomes)))
 
-fit_lm_model <- function(datafile, outcome, clock_var, covariates) {
-  if(length(levels(datafile$rs_cohort)) >1 ){
-    covariates2 = paste(covariates, "+ rs_cohort")
-  }
-  else{covariates2 = covariates
-  }
-  
-  datafile[,"oucome_use"] <- scale(datafile[[outcome]])
-  formula <- as.formula(paste("oucome_use", "~",clock_var,"+", paste(covariates2, collapse = " + ")))
-  fit <- lm(formula, data = datafile)
-  return(fit)
-}
 
 pb <- txtProgressBar(min = 0, max = nrow(lmparams), style = 3)
 
@@ -245,61 +197,10 @@ for (j in 1:nrow(lmparams)){
   lmparams[j,"R2"]           =summary(fitlm)$adj.r.squared
   #lmparams[j,"interaction"]  =summary(fitlm)$coefficients["biological_age:sex", "Pr(>|t|)"]
   close(pb)
-
-}
-
-
-fit_glm_model <- function(datafile, binoutcome, clock_var, covariates) {
-  if(length(levels(datafile$rs_cohort)) >1 ){
-    covariates2 = paste(covariates, "+ rs_cohort")
-    }
-    else{covariates2 = covariates
-  }
-  formula <- as.formula(paste(binoutcome, "~",clock_var,"+", paste(covariates2, collapse = " + ")))
-  fit <- glm(formula, data = datafile, family = "binomial")
-  return(fit)}
-
-# Create a data frame of all combinations of datasets, models, and dets
-logist <- expand.grid("vali", binary_outcomes, models[1], biomarkers)
-names(logist) = c("dataset", "binouts","model", "clocks")
-
-# Loop through all combinations of binary outcomes, i, models, and dets
-for (j in 1:nrow(logist)){
-  # Update de progress bar every iteration
-  setTxtProgressBar(pb, j)
   
-  df = as.character(logist[j, "dataset"]) #save datafile
-  model = as.character(logist[j,"model"]) #save models
-  clock = as.character(logist[j,"clocks"])
-  bin = as.character(logist[j,"binouts"])
- 
-  
-  datafile = preprocess_data(data(df), clock, model, FALSE, bin) #create datafile
-  fitlog = fit_glm_model(datafile, bin,"biological_age", model) #perform GLM
-  
-  #Saving output in Params next to input variables
-  logist[j,"N"]            =length(fitlog$fitted.values)
-  logist[j,"Ncases"]       =sum(fitlog$y==1)
-  logist[j,"Ncontrol"]     =sum(fitlog$y==0)
-  logist[j,"OR"]           =exp(coef(fitlog))[2] 
-  logist[j,c("BETA","SE","Z","P")]=summary(fitlog)$coefficients[2,]
-  logist[j,"LL"]  = exp(confint(fitlog)[2,1])
-  logist[j,"UL"]  = exp(confint(fitlog)[2,2])
-  close(pb)
 }
 
 #### Multi-nomial ####
-library("nnet")
-fit_multinom_model <- function(datafile, multioutcome, clock_var, covariates) {
-  if(length(levels(datafile$rs_cohort)) >1 ){
-    covariates2 = paste(covariates, "+ rs_cohort")
-  }
-  else{covariates2 = covariates
-  }
-  formula <- as.formula(paste(multioutcome, "~",clock_var,"+", paste(covariates2, collapse = " + ")))
-  fit <- multinom(formula, data = datafile)
-  
-  return(fit)}
 
 # Create a data frame of all combinations of datasets, models, and dets
 multinom <- expand.grid("vali", multi_outcomes, models[1], biomarkers)
@@ -324,14 +225,14 @@ for (j in 1:nrow(multinom)){
   
   datafile = preprocess_data(data(df), clock, model, FALSE, bin) #create datafile
   fitmnom = fit_multinom_model(datafile, multi,"biological_age", model) #perform GLM
- # print(fitmnom)
+  # print(fitmnom)
   
   bci = as.data.frame(exp(confint(fitmnom)))
   
   a =  levels(data(df)[,multi])[2]
   b =  levels(data(df)[,multi])[3]
   if(length(levels(data(df)[,multi])) > 3){
-  c =  levels(data(df)[,multi])[4]
+    c =  levels(data(df)[,multi])[4]
   }
   pValue_extract(fitmnom)
   #Saving output in Params next to input variables
@@ -349,17 +250,16 @@ for (j in 1:nrow(multinom)){
   multinom[j, "UL L2"]= bci["biological_age", paste0("97.5 %.",b)]
   multinom[j, "P L2"]= pValue_extract(fitmnom)[b,"biological_age"]
   if(length(levels(data(df)[,multi])) > 3){
-  multinom[j,"Level 3"]       =c
-  multinom[j,"N Level 3"]     =sum(data(df)[,multi] ==c, na.rm =T)
-  multinom[j,"OR L3"]           =exp(summary(fitmnom)$coefficients[c,"biological_age"])
-  multinom[j, "LL L3"]= bci["biological_age", paste0("2.5 %.",c)]
-  multinom[j, "UL L3"]= bci["biological_age", paste0("97.5 %.",c)]
-  multinom[j, "P L3"]= pValue_extract(fitmnom)[c,"biological_age"]
+    multinom[j,"Level 3"]       =c
+    multinom[j,"N Level 3"]     =sum(data(df)[,multi] ==c, na.rm =T)
+    multinom[j,"OR L3"]           =exp(summary(fitmnom)$coefficients[c,"biological_age"])
+    multinom[j, "LL L3"]= bci["biological_age", paste0("2.5 %.",c)]
+    multinom[j, "UL L3"]= bci["biological_age", paste0("97.5 %.",c)]
+    multinom[j, "P L3"]= pValue_extract(fitmnom)[c,"biological_age"]
   }
   close(pb)
 }
 
-library(tidyr)
 
 # Reshape the dataframe from wide to long format
 multinom_long <- pivot_longer(
@@ -369,15 +269,9 @@ multinom_long <- pivot_longer(
   names_pattern = "(Level|OR|LL|UL|N|P)_?(.*)"
 )
 
-# Print the resulting long format dataframe
-print(multinom_long)
-
 multinom_long = multinom_long %>% mutate(
   OR_handig = paste0(sprintf(OR, fmt = "%.2f"), " (", sprintf(LL, fmt = "%.2f"), ";", sprintf(UL, fmt = "%.2f"), ")")
 )
-
-library(dplyr)
-library(ggplot2)
 
 outcome_names <- list(
   'FI_E4'="Frailty index",
@@ -386,10 +280,6 @@ outcome_names <- list(
   'IADL'="IADL",
   'BADL'="BADL"
 )
-
-outcome_labeller <- function(variable,value){
-  return(outcome_names[value])
-}
 
 # Create the ggplot2 graph
 ggplot(lmparams, aes(x = BETA, y = clocks, color = as.factor(clocks))) +
@@ -415,13 +305,13 @@ lmparams = lmparams %>% mutate(
                                outcomes == "PhenoAge" ~ "PhenoAge",
                                outcomes == "BADL" ~ "BADL",
                                outcomes == "IADL" ~ "IADL"),
-datasetname = case_when(dataset == "test" ~ "Test set (n=772)",
-                        dataset == "vali" ~ "Younger validation set (n=754)"),
-Tolmutedouts = case_when(outcomes == "FI_E4" ~ Tol_muted[1],
-                         outcomes == "FI_delta" ~ Tol_muted[2],
-                         outcomes == "PhenoAge" ~ Tol_muted[3],
-                         outcomes == "BADL" ~ Tol_muted[4],
-                         outcomes == "IADL" ~ Tol_muted[5]))
+  datasetname = case_when(dataset == "test" ~ "Test set (n=772)",
+                          dataset == "vali" ~ "Younger validation set (n=754)"),
+  Tolmutedouts = case_when(outcomes == "FI_E4" ~ Tol_muted[1],
+                           outcomes == "FI_delta" ~ Tol_muted[2],
+                           outcomes == "PhenoAge" ~ Tol_muted[3],
+                           outcomes == "BADL" ~ Tol_muted[4],
+                           outcomes == "IADL" ~ Tol_muted[5]))
 lmparams$outcome_name_use = factor(lmparams$outcome_name_use, levels = c("Frailty index",
                                                                          "Delta frailty",
                                                                          "PhenoAge",
@@ -431,25 +321,31 @@ lmparams$clocks = factor(lmparams$clocks, levels = c("miRNA_mortality",
                                                      "miRNA_FI",
                                                      "miRNA_PhenoAge",
                                                      "miRNA_age"))
-
+# Color blind friendly colours
 colorblind=c(
   "#361ae5",
   "#dc267f",
   "#fe6100",
   "#ffb000")
 
-Tol_light <- c('#BBCC33', '#AAAA00', '#77AADD', '#EE8866', '#EEDD88', '#FFAABB', '#99DDFF', '#44BB99', '#DDDDDD')
-
-Tol_light2 <- c('#BBCC33', '#AAAA00', '#77AADD', '#EE8866', '#EEDD88', '#FFAABB', '#99DDFF', '#44BB99', '#DDDDDD','#BFE39A', '#A6B5E3')
 Tol_light2 <- c( '#B57DC2', '#AAAA00', '#77AADD', '#EE8866', '#EEDD88', '#FFAABB', '#99DDFF', '#44BB99', '#DDDDDD', '#BFE39A', '#A6B5E3', "#D4A4CC")
 
 
+extracolorblind= c(
+  "#f46d43",
+  "#fdae61",
+  "#fee090",
+  "#ffffbf",
+  "#e0f3f8",
+  "#abd9e9",
+  "#74add1",
+  "#4575b4")
 
-library("ggh4x")
+# Make plots
 strip_make <- strip_themed(background_x = elem_list_rect(fill = Tol_light2[c(8,6)], linetype = "solid",
                                                          color = "black", linewidth = c(1,1)), 
                            background_y = elem_list_rect(fill = Tol_light2[c(1,3,4,5,7)], linetype = "solid",
-                                                           color = "black", linewidth = c(1,1,1,1)))
+                                                         color = "black", linewidth = c(1,1,1,1)))
 # Create the ggplot2 graph
 cross = ggplot(lmparams, aes(x = BETA, y = clocks, xmin = LL, xmax = UL, color = clocks)) +
   geom_point(size = 3) +
@@ -472,44 +368,22 @@ ggsave(cross, filename = "./Results/Cross_sectional_Biomarkers.png", width = 15,
 mort = mort %>% mutate(
   outcome_name_use = case_when(outcomes == "inc_mortality" ~ "Mortality",
                                outcomes == "inc_multimorbid" ~ "Multimorbidity",
-                               outcomes == "inc_morbidity" ~ "First morbidity",
-                               outcomes == "inc_CHD" ~  "CHD",
-                               outcomes == "inc_COPD" ~  "COPD", 
-                               outcomes == "inc_dementia" ~ "Dementia", 
-                               outcomes == "inc_DM" ~  "Diabetes Mellitus",
-                               outcomes == "inc_cancer" ~  "Cancer"), 
+                               outcomes == "inc_morbidity" ~ "First morbidity"), 
   datasetname = case_when(dataset == "test" ~ "Test set (n=772)",
                           dataset == "vali" ~ "Younger validation set (n=754)"))
 
 mort$outcome_name_use = factor(mort$outcome_name_use, levels = c("Mortality",
                                                                  "Multimorbidity",
-                                                                 "First morbidity",
-                                                                 "CHD",
-                                                                 "COPD",
-                                                                 "Dementia",
-                                                                 "Diabetes Mellitus",
-                                                                 "Cancer"))
+                                                                 "First morbidity"))
 mort$clocks = factor(mort$clocks, levels = c("miRNA_mortality",
-                                              "miRNA_FI",
-                                              "miRNA_PhenoAge",
-                                              "miRNA_age"))
-
-
-extracolorblind= c(
-"#f46d43",
-"#fdae61",
-"#fee090",
-"#ffffbf",
-"#e0f3f8",
-"#abd9e9",
-"#74add1",
-"#4575b4")
-
+                                             "miRNA_FI",
+                                             "miRNA_PhenoAge",
+                                             "miRNA_age"))
 
 strip_make_cox <- strip_themed(background_x = elem_list_rect(fill = Tol_light2[c(8,6)], linetype = "solid",
-                                                         color = "black", linewidth = c(1,1)), 
-                            background_y = elem_list_rect(fill = Tol_light2[c(11, 2, 12)], linetype = "solid",
-                                                         color = "black", linewidth = c(1,1,1,1)))
+                                                             color = "black", linewidth = c(1,1)), 
+                               background_y = elem_list_rect(fill = Tol_light2[c(11, 2, 12)], linetype = "solid",
+                                                             color = "black", linewidth = c(1,1,1,1)))
 mort2 = subset(mort, (outcomes == "inc_mortality" | outcomes ==  "inc_morbidity"  | outcomes ==  "inc_multimorbid") & modeluse == models[2])
 
 cox = ggplot(mort2, aes(x = HR, y = clocks, xmin = LL, xmax = UL, color = clocks)) +
@@ -530,23 +404,14 @@ ggsave(cox, filename = "./Results/Cox_sectional_Biomarkers.png", width = 14, hei
 ggsave(cox, filename = "./Results/Cox_sectional_Biomarkers_small.png", width = 14, height =  4, units = "in", limitsize = F)
 
 strip_make_selfhealth <- strip_themed(background_x = elem_list_rect(fill = Tol_light2[c(8,6)], linetype = "solid",
-                                                         color = "black", linewidth = c(1,1)), 
-                            background_y = elem_list_rect(fill = Tol_light2[c(10,9)], linetype = "solid",
-                                                         color = "black", linewidth = c(1,1,1,1)))
+                                                                    color = "black", linewidth = c(1,1)), 
+                                      background_y = elem_list_rect(fill = Tol_light2[c(10,9)], linetype = "solid",
+                                                                    color = "black", linewidth = c(1,1,1,1)))
 
 # Extract unique combinations of multiouts and clocks
 unique_combinations <- multinom_long %>% 
   distinct(multiouts, clocks) 
 
-library(dplyr)
-
-# Assuming you have a dataframe named `multinom_long`
-
-library(dplyr)
-
-# Extract unique combinations of multiouts and clocks
-unique_combinations <- multinom_long %>% 
-  distinct(multiouts, Level, clocks) 
 
 # Create a dataframe with the same number of rows as unique combinations
 new_rows <- data.frame(
@@ -569,7 +434,7 @@ multinom_long2 <- bind_rows(multinom_long, new_rows)
 
 multinom_long2 = multinom_long2 %>%
   mutate(OR_CI = paste0(sprintf(OR, fmt = "%.2f"), " (", sprintf(LL, fmt = "%.2f"), ";", sprintf(UL, fmt = "%.2f"), ")"),
-       datasetname = case_when(dataset == "test" ~ "Test set (n=772)",
+         datasetname = case_when(dataset == "test" ~ "Test set (n=772)",
                                  dataset == "vali" ~ "Younger validation set (n=754)"),
          outsname = case_when(Level == "better" ~ "Better",
                               Level == "worse" ~ "Worse"))
@@ -589,7 +454,7 @@ selfhealthplot = ggplot(multinom_long2, aes(x = OR, y = clocks, xmin = LL, xmax 
   guides(colour = guide_legend(order = 1, nrow = 2, byrow=T, reverse = T))+
   theme(text = element_text(size = 18))
 
-library("ggpubr")
+
 fig5 = ggarrange(cross, selfhealthplot, cox, nrow = 3, common.legend = T, legend = "bottom", heights = c(4,2,3), labels = c("a", "b", "c"), font.label = list(size = 18, face = "bold"))+ bgcolor("white")
 ggsave(fig5, filename = "./Results/All_outs_Biomarkers2.png", width = 13, height =  17, units = "in", limitsize = F)
 
@@ -650,8 +515,6 @@ write.csv(multinom_long, "./Results/SelfratedHealthVali.csv", row.names = F)
 circularity_table = mort2 %>% subset(., grepl("mortality", outcomes) & dataset != "vali") %>% 
   mutate(Nevent_N = paste0(Nevent,"/", N)) %>%
   select(., c(clocks, outcomes, Nevent_N, HR_CI, pFDR_handig)) 
-
-library(tidyr)
 
 #Make wide table
 circularity_table_wide <- circularity_table %>%
