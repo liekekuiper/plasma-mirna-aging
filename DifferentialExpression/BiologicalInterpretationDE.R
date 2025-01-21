@@ -7,8 +7,9 @@ library("DESeq2")
 library("VennDiagram")
 library("enrichplot")
 library("ggpubr")
-library(clusterProfiler)
-library(org.Hs.eg.db)
+library("clusterProfiler")
+library("org.Hs.eg.db") 
+library("seqinr")
 
 # List all CSV files in the directory
 csv_files <- list.files(pattern = "*.csv")
@@ -73,9 +74,91 @@ colnames(mort_subset) <- c("miRNA2", "log2FoldChange_mort", "padj_mort")
 merged_data <- Reduce(function(x, y) merge(x, y, by = "miRNA2", all = TRUE), 
                       list(age_subset, PA_subset, FI_subset, mort_subset))
 
-# View the merged_data
-head(merged_data)
+##Elastic net results
 
+# Weights of biomarkers
+addfile12 <- read_excel("../../Results_miRNA_29Nov2024_EN.xlsx", sheet = "All") %>%
+  mutate(across(-miRNA, as.numeric)) %>%
+  left_join(rnacounts12[, c("miRNA", "miRNA2")], by = "miRNA") %>%
+  mutate(miRNA2 = case_when(is.na(miRNA2) ~ "Intercept", TRUE ~ miRNA2)) %>%
+  dplyr::select(miRNA2, age, PhenoAge, FI, mortality) %>%
+  rename("miRNA" = "miRNA2", 
+         "mirAge" = "age", 
+         "mirPA" = "PhenoAge", 
+         "mirFI" = "FI",
+         "mirMort" = "mortality")
+openxlsx::write.xlsx(addfile12, "../../AdditionalFile12.xlsx")
+
+# Venn diagram
+# Load data and filter non-zero weights
+load_data <- function(sheet_name) {
+  read_excel("../../Results_miRNA_29Nov2024_EN.xlsx", sheet = sheet_name) %>%
+    mutate(Weight = as.numeric(Weight)) %>%
+    filter(Weight != 0) %>%
+    left_join(rnacounts12[, c("miRNA", "miRNA2")])
+}
+
+enpredage <- load_data("age")
+enpredPA <- load_data("PhenoAge")
+enpredFI <- load_data("FI")
+enpredmort <- load_data("mortality")
+
+# Extract miRNA2 lists for Venn diagram
+get_miRNA2 <- function(data) {
+  data %>% filter(miRNA != "(Intercept)") %>% pull(miRNA2)
+}
+
+agevenn <- get_miRNA2(enpredage)
+pavenn <- get_miRNA2(enpredPA)
+fivenn <- get_miRNA2(enpredFI)
+mortvenn <- get_miRNA2(enpredmort)
+
+# Combine data and add direction labels
+combined_data <- bind_rows(
+  enpredage %>% mutate(Source = "mirAge"),
+  enpredPA %>% mutate(Source = "mirPA"),
+  enpredFI %>% mutate(Source = "mirFI"),
+  enpredmort %>% mutate(Source = "mirMort")
+) %>%
+  mutate(Direction = ifelse(Weight > 0, "+", ifelse(Weight < 0, "-", NA)))
+
+# Create contingency table
+contingency_table <- combined_data %>%
+  dplyr::select(miRNA2, Source, Weight) %>%
+  pivot_wider(names_from = Source, values_from = Weight, values_fill = NA) %>%
+  filter(!is.na(miRNA2)) %>%
+  mutate(included_in = rowSums(!is.na(across(where(is.numeric)))))
+
+# Identify miRNAs in >1 biomarker or with inconsistent direction
+morethanone <- contingency_table %>% filter(included_in > 1)
+not_consistent <- contingency_table %>%
+  rowwise() %>%
+  filter(all(c(-1, 1) %in% sign(across(where(is.numeric))))) %>%
+  ungroup()
+
+# Define colors and data for Venn diagram
+colorblind <- c("#361ae5", "#dc267f", "#fe6100", "#ffb000")
+venn_data <- list(
+  "MiRNA in mirAge" = agevenn,
+  "MiRNA in mirPA" = pavenn,
+  "MiRNA in mirFI" = fivenn,
+  "MiRNA in mirMort" = mortvenn
+)
+
+# Create Venn diagram
+venn.plot <- venn.diagram(
+  x = venn_data,
+  imagetype = 'png',
+  height = 5, width = 8, units = "in",
+  category.names = names(venn_data),
+  col = colorblind, fill = colorblind, alpha = 0.4,
+  cat.cex = 1, cat.fontfamily = "sans",
+  main.fontfamily = "sans", fontfamily = "sans",
+  main = "Venn Diagram of MiRNAs selected in aging biomarkers",
+  main.cex = 1.5,
+  filename = "../Venn_aging_biomarkers.png",
+  resolution = 1200
+)
 
 miRNAs = unique(c(paste0("hsa-",significant_testage_miRNAs$miRNA2),
            paste0("hsa-",significant_testPA_miRNAs$miRNA2),
@@ -86,7 +169,6 @@ miRNAs = unique(c(paste0("hsa-",significant_testage_miRNAs$miRNA2),
 predicted = data.table::fread("../../../Data/BiologicalInterpretation/miRDB_v6.0_prediction_result.txt") #mirDB
 predictedkeep = subset(predicted, V3 > 80 & V1 %in% paste0("hsa-", all591mirnas$miRNA))
 names(predictedkeep) = c("miRNA", "Gene", "certainty")
-#When naming is outdated: update
 predictedkeep = predictedkeep %>%
   mutate(Gene = case_when(Gene == "NM_001017973" ~ "NM_001365679",
                           Gene == "NM_001286549" ~ "NR_149155",
@@ -145,23 +227,19 @@ predictedkeep = predictedkeep %>%
                           Gene == "NM_001281729" ~ "NR_168134",
                           TRUE ~ Gene)) %>% subset(., !is.na(Gene))
 
-#How many have been matched
 length(unique(predictedkeep$miRNA)) #571
 
-#Only keep ones that have been identified
 predicted_age_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",significant_testage_miRNAs$miRNA2))
 predicted_PA_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",significant_testPA_miRNAs$miRNA2))
 predicted_FI_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",significant_testFI_miRNAs$miRNA2))
 predicted_mort_genes = subset(predictedkeep, miRNA %in% paste0("hsa-",significant_testmort_miRNAs$miRNA2))
 
-#Number of miRNAs that have predicted gene per outcome
 length(unique(predicted_age_genes$miRNA)) #176
 length(unique(predicted_PA_genes$miRNA))  #216
 length(unique(predicted_FI_genes$miRNA))  #59
 length(unique(predicted_mort_genes$miRNA))#15
 
-
-# Function for overrepresentation with ID conversion from RefSeq to Entrez
+# Function for OR with ID conversion from RefSeq to Entrez
 perform_OR_with_conversion <- function(significant_mirna_lists, all_mirna_targets, organism = "hsa") {
   # significant_mirna_lists: Named list of data frames with columns "miRNA" and "Gene" (RefSeq IDs)
   # all_mirna_targets: Data frame with "miRNA" and "Gene" (RefSeq IDs) for all miRNA-gene mappings
@@ -265,11 +343,6 @@ significant_mirna_lists = list("age" = predicted_age_genes, "PA" = predicted_PA_
 results <- perform_OR_with_conversion(significant_mirna_lists, predictedkeep)
 print(results)
 
-en_mirna_lists = list("en_age" = en_age_genes, "en_PA" = en_PA_genes, "en_FI" = en_FI_genes, "en_mort" = en_mort_genes)
-# Run the enrichment function 
-results_en <- perform_OR_with_conversion(en_mirna_lists, predictedkeep)
-print(results_en)
-
 #Save results per outcome
 age_go = results$age$GO@result
 PA_go = results$PA$GO@result
@@ -279,6 +352,7 @@ results_go = list(age_go, PA_go, FI_go, mort_go)
 results_go_df = Reduce(function(x,y) full_join(x,y), results_go)
 results_go_df = dplyr::select(results_go_df, c(Outcome, ID, Description, GeneRatio, BgRatio, FoldEnrichment, p.adjust, Count))
 
+# Make file of GO results
 results_go_df = results_go_df %>% mutate(
   Outcome = case_when(Outcome == "age" ~ "Chronological age",
                       Outcome == "PA" ~ "PhenoAge",
@@ -291,12 +365,10 @@ results_go_df = results_go_df %>% mutate(
                 "Proportion of background genes mapped to the pathway" = "BgRatio",
                 "Fold Enrichment" = "FoldEnrichment",
                 "p-value after FDR-correction" = "p.adjust") 
-#To make Excel file more pretty
-#results_go_df$Outcome <- with(results_go_df, ifelse(duplicated(Outcome), NA, Outcome))
 
-openxlsx::write.xlsx(results_go_df, "../../AdditionalFile8.xlsx")
+openxlsx::write.xlsx(results_go_df, "../../AdditionalFile9.xlsx")
 
-
+# Make file of KEGG results
 age_kegg = results$age$KEGG@result
 PA_kegg = results$PA$KEGG@result
 FI_kegg = results$FI$KEGG@result
@@ -320,7 +392,7 @@ results_kegg_df = results_kegg_df %>% mutate(
              "Category" = "category") 
 #results_kegg_df$Outcome <- with(results_kegg_df, ifelse(duplicated(Outcome), NA, Outcome))
 # Save the table to an Excel file
-openxlsx::write.xlsx(results_kegg_df, "../../AdditionalFile9.xlsx")
+openxlsx::write.xlsx(results_kegg_df, "../../AdditionalFile10.xlsx")
 
 #Save results per outcome ~ en results
 age_en_go = results_en$en_age$GO@result
@@ -344,7 +416,7 @@ highest_expressed_organ <- mirexpression %>%
   dplyr::select(acc, organ, expression)
 
 
-
+# Overexpression
 mirexpression_keep_age = subset(highest_expressed_organ, acc %in% paste0("hsa-",significant_testage_miRNAs$miRNA) & expression > 0)
 mirexpression_keep_PA = subset(highest_expressed_organ, acc %in% paste0("hsa-",significant_testPA_miRNAs$miRNA) & expression > 0)
 mirexpression_keep_FI = subset(highest_expressed_organ, acc %in% paste0("hsa-",significant_testFI_miRNAs$miRNA) & expression > 0)
@@ -443,23 +515,22 @@ perform_fisher_tests <- function(tsi, significant_miRNAs, dataset_name1, dataset
        sig_expected = sig_expected_results)
 }
 
-# Use for different miRNA datasets
+# Test results
 results_testage <- perform_fisher_tests(tsi, significant_testage_miRNAs, "tsi_specific_age", "tsi")
 results_testPA <- perform_fisher_tests(tsi, significant_testPA_miRNAs, "tsi_specific_PA", "tsi")
 results_testFI <- perform_fisher_tests(tsi, significant_testFI_miRNAs, "tsi_specific_FI", "tsi")
 results_testmort <- perform_fisher_tests(tsi, significant_testmort_miRNAs, "tsi_specific_mort", "tsi")
 
-#Combine results
+#Combine in one file
 tissue_allpheno = rbind(results_testage$expected_counts, results_testPA$expected_counts, results_testFI$expected_counts, results_testmort$expected_counts)
 tissue_allpheno$pFDR = p.adjust(tissue_allpheno$p_value, method = "fdr")
-
 # Convert the relevant columns to numeric
 tissue_allpheno$count_set1 <- as.numeric(tissue_allpheno$count_set1)
 tissue_allpheno$expected_count1 <- as.numeric(tissue_allpheno$expected_count1)
 tissue_allpheno$count_set2 <- as.numeric(tissue_allpheno$count_set2)
 tissue_allpheno$expected_count2 <- as.numeric(tissue_allpheno$expected_count2)
 
-additionalfile7 = tissue_allpheno %>% rename(., 
+additionalfile8 = tissue_allpheno %>% rename(., 
                                              "N miRNAs differentially expressed"="count_set1",
                                              "N miRNAs not differentially expressed"="count_set2",
                                              "Expected N miRNAs differentially expressed" = "expected_count1", 
@@ -480,7 +551,7 @@ additionalfile7 = tissue_allpheno %>% rename(.,
                 pFDR)
 
 # Save the table to an Excel file
-openxlsx::write.xlsx(additionalfile7, "../../AdditionalFile7.xlsx")
+openxlsx::write.xlsx(additionalfile8, "../../AdditionalFile8.xlsx")
 
 sig_tissue_allpheno = subset(tissue_allpheno, pFDR < 0.05)
 overrep = subset(sig_tissue_allpheno, count_set1 > expected_count1)
@@ -506,8 +577,8 @@ sum(Wu_PA_included$`Coefficient.(Log2)` < 0 & Wu_PA_included$log2FoldChange > 0)
 sum(Wu_PA_included$`Coefficient.(Log2)` > 0 & Wu_PA_included$log2FoldChange < 0) #0
 
 
-## Table S4
-create_tables4 <- function(outcome, set) {
+## Additional File 5
+create_tables5 <- function(outcome, set) {
   # Dynamically reference the data frame
   df <- get(paste0("DE_", outcome, "_", set))
   df = df %>% mutate(miRNA = rownames(df),
@@ -552,7 +623,7 @@ combine_tables <- function(outcomes, sets) {
       if (set == "Validation" && outcome != "AGE_Standard50") next
       
       # Create the table for the current outcome and set
-      new_table <- create_tables4(outcome, set)
+      new_table <- create_tables5(outcome, set)
       
       # Add to set_tables list
       set_tables[[outcome]] <- new_table
@@ -564,7 +635,8 @@ combine_tables <- function(outcomes, sets) {
   }
   
   # Combine all set tables into a single table
-  final_table <- purrr::reduce(all_tables, full_join, by = "miRNA")
+  final_table1 <- purrr::reduce(all_tables, full_join, by = "miRNA")
+  final_table = inner_join(mibase20_df, final_table1)
   return(final_table)
 }
 
@@ -572,18 +644,36 @@ combine_tables <- function(outcomes, sets) {
 outcomes <- c("AGE_Standard50", "PhenoAge_Standard50", "FI_Standard50", "event_Standard50")
 sets <- c("Training", "Test", "Validation")
 
-# Create Table S4 dynamically
-tables4 <- combine_tables(outcomes, sets)
-top20 = tables4[order(tables4$`padj for Chronological Age in the Test set`), ]
-top20_keep = top20[c(1:20),]
-tables4 = tables4[order(tables4$`padj for Chronological Age in the Validation set`), ]
-top20_keep_val = tables4[c(1:20),]
-top20_keep[top20_keep$miRNA %in% top20_keep_val$miRNA,]$miRNA
-tables4 = dplyr::select(tables4, -starts_with("padj")) #only included to 
-openxlsx::write.xlsx(tables4, "../../TableS4.xlsx")
+# Load the sequence of mirBase v20
+mibase20 = read.fasta("../../../Data/mature.fa")
+# Convert to dataframe
+mibase20_df <- data.frame(
+  Name = names(mibase20),                # Extract sequence names
+  Sequence = sapply(mibase20, function(seq) paste(seq, collapse = "")),  # Combine sequence elements into a single string
+  Annotation = sapply(mibase20, function(seq) attr(seq, "Annot")),       # Extract annotation
+  stringsAsFactors = FALSE              # Prevent factors
+) %>%
+  mutate(
+    ID = gsub("^>(\\S+).*", "\\1", Annotation),           # Extract ID (e.g., "hsa-let-7a-5p")
+    Accession = gsub("^>\\S+\\s(\\S+).*", "\\1", Annotation),  # Extract accession (e.g., "MIMAT0000062")
+    Species = gsub("^>\\S+\\s\\S+\\s([A-Za-z]+\\s[A-Za-z]+).*", "\\1", Annotation), # Extract species (e.g., "Homo sapiens")
+    miRNA = gsub("^>\\S+\\s\\S+\\s[A-Za-z]+\\s[A-Za-z]+\\s(.*)", "\\1", Annotation) # Extract description (e.g., "let-7a-5p")
+  ) %>%
+  subset(., Species == "Homo sapiens") %>%
+  dplyr::select(., c(miRNA, ID, Accession, Sequence))  
 
-#Additional File 6
-create_tables5 <- function(set_used) {
+# Create Additional File 5 dynamically
+tables5 <- combine_tables(outcomes, sets)
+top20 = tables5[order(tables5$`padj for Chronological Age in the Test set`), ]
+top20_keep = top20[c(1:20),]
+tables5 = tables5[order(tables5$`padj for Chronological Age in the Validation set`), ]
+top20_keep_val = tables5[c(1:20),]
+top20_keep[top20_keep$miRNA %in% top20_keep_val$miRNA,]$miRNA
+tables5 = dplyr::select(tables5, -starts_with("padj")) #only included to 
+openxlsx::write.xlsx(tables5, "../../TableS5.xlsx")
+
+#Additional File 7
+create_tables7 <- function(set_used) {
   # Dynamically reference the data frame
   df <- get(paste0("DE_", set_used, "_Training"))
   df = df %>% mutate(miRNA = rownames(df),
@@ -620,29 +710,60 @@ combine_tables2 <- function(outcomes) {
   # Loop through outcomes
   for (outcome in outcomes) {
     # Create the table for the current outcome
-    new_table <- create_tables5(outcome)
+    new_table <- create_tables7(outcome)
     
     # Add the table to the list
     all_tables[[outcome]] <- new_table
   }
   
   # Combine all tables by miRNA
-  final_table <- purrr::reduce(all_tables, full_join, by = "miRNA")
+  final_table1 <- purrr::reduce(all_tables, full_join, by = "miRNA")
+  final_table = inner_join(mibase20_df, final_table1)
   return(final_table)
 }
 
 # Define outcomes
 outcomes <- c("AGE_Standard50", "AGE_Sensitivity25", "AGE_NoCutoff")
 
-# Create Table S5 dynamically
-tables5 <- combine_tables2(outcomes)
+# Create Additional File 7 dynamically
+tables7 <- combine_tables2(outcomes)
 
 # Sort the tables based on the pFDR column for Chronological Age
-tables5 <- tables5[order(tables5$`padj for Chronological Age in the regular Trainin Set, with cut-off 50%`), ]
+tables7 <- tables7[order(tables7$`padj for Chronological Age in the regular Trainin Set, with cut-off 50%`), ]
 
 # Exclude 'padj' columns
-tables5 <- dplyr::select(tables5, -starts_with("padj"))
+tables7 <- dplyr::select(tables7, -starts_with("padj"))
 
 # Save the table to an Excel file
-openxlsx::write.xlsx(tables5, "../../TableS5.xlsx")
+openxlsx::write.xlsx(tables7, "../../TableS7.xlsx")
+
+#Answer question Reviewer 3
+old_associated = read_excel("../Old Results For Reviewer 3/Additional_File4_Table_S4.xlsx")
+old_associated2 = read_excel("../Old Results For Reviewer 3/Additional_File6_Table_S5.xlsx")
+old_associated2[, -1] <- lapply(old_associated2[, -1], as.numeric)
+
+old_associated2 = subset(old_associated2, `pFDR Age in train set with LLOQ 50%` < 0.05)
+old_associated[, -1] <- lapply(old_associated[, -1], as.numeric)
+old_age = subset(old_associated, `pFDR Age in test set` < 0.05)
+
+sum(old_age$miRNA %in% significant_testage_miRNAs$miRNA2) / nrow(old_age)
+sum(significant_testage_miRNAs$miRNA2 %in% old_age$miRNA) / nrow(significant_testage_miRNAs)
+
+sig_val_age = subset(DE_AGE_Standard50_Validation, padj < 0.05)
+old_age_val = subset(old_associated, `pFDR Age in validation set` < 0.05)
+sum(old_age_val$miRNA %in% rownames(sig_val_age)) / nrow(old_age_val)
+sum(rownames(sig_val_age) %in% old_age_val$miRNA) / nrow(sig_val_age)
+
+old_PA = subset(old_associated, `pFDR PhenoAge in test set` < 0.05)
+sum(old_PA$miRNA %in% significant_testPA_miRNAs$miRNA2) / nrow(old_PA)
+sum(significant_testPA_miRNAs$miRNA2 %in% old_PA$miRNA) / nrow(significant_testPA_miRNAs)
+
+old_FI = subset(old_associated, `pFDR Frailty Index in test set` < 0.05)
+sum(old_FI$miRNA %in% significant_testFI_miRNAs$miRNA2) / nrow(old_FI)
+sum(significant_testFI_miRNAs$miRNA2 %in% old_FI$miRNA) / nrow(significant_testFI_miRNAs)
+
+old_mort = subset(old_associated, `pFDR 10-years-mortality in test set` < 0.05)
+sum(old_mort$miRNA %in% significant_testmort_miRNAs$miRNA2) / nrow(old_mort)
+sum(significant_testmort_miRNAs$miRNA2 %in% old_mort$miRNA) / nrow(significant_testmort_miRNAs)
+
 
